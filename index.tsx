@@ -10,7 +10,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   Legend
-} from 'https://esm.sh/recharts@2.10.0?external=react,react-dom';
+} from 'https://esm.sh/recharts@2.7.2?external=react,react-dom';
 import { 
   Upload, 
   FileText, 
