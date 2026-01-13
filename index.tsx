@@ -27,7 +27,9 @@ import {
   Zap,
   Filter,
   Flame,
-  Heart
+  Heart,
+  Shield,
+  Target
 } from 'https://esm.sh/lucide-react@0.344.0?external=react';
 
 // --- Types ---
@@ -49,7 +51,9 @@ interface EffectDamageEntry {
   time: number;
   unit: string;
   effect: string;
-  damage: number;
+  rawDamage: number;       // 施加伤害
+  hpDeduction: number;     // 实际生命扣除
+  shieldDeduction: number; // 护盾扣除
 }
 
 interface EffectHealingEntry {
@@ -81,32 +85,6 @@ const COLORS = [
   '#6366f1', // Indigo
   '#84cc16', // Lime
 ];
-
-// --- Helper: Demo Data ---
-// Updated to match the user's specific Chinese log format including skills and effects
-const DEMO_CSV = `Time,LogContent
-0,>11:48:02,单位创建,牛魔王(Ally), tid=27, uid=1, 属性={防御=4781 生命=71719}
-0,>11:48:02,单位创建,风伯(Enemy), tid=28, uid=2, 属性={防御=3000 生命=63725}
-0,>11:48:02,单位创建,铁扇公主(Ally), tid=29, uid=3, 属性={防御=2500 生命=45000}
-500,>11:48:03,血量变化,牛魔王(Ally),变化值=-1000,变动情况=71719=>70719
-600,>11:48:03,技能释放,牛魔王(Ally),蛮牛冲撞
-650,>11:48:03,效果触发,牛魔王(Ally),伤害目标,风伯(Enemy),蛮牛冲撞_撞击,伤害=800
-800,>11:48:03,血量变化,铁扇公主(Ally),变化值=-2000,变动情况=45000=>43000
-1125,>11:48:03,血量变化,风伯(Enemy),变化值=-2091,变动情况=63725=>61634
-1200,>11:48:03,技能释放,风伯(Enemy),风卷残云
-1250,>11:48:03,效果触发,风伯(Enemy),伤害目标,牛魔王(Ally),风卷残云_风刃,伤害=450
-1300,>11:48:03,效果触发,风伯(Enemy),伤害目标,铁扇公主(Ally),风卷残云_风刃,伤害=450
-1350,>11:48:03,效果触发,铁扇公主(Ally),回复生命,牛魔王(Ally),芭蕉扇_治愈,回复生命值=1500
-1500,>11:48:04,血量变化,牛魔王(Ally),变化值=-500,变动情况=70719=>70219
-1600,>11:48:04,技能释放,牛魔王(Ally),蛮牛冲撞
-1650,>11:48:04,效果触发,牛魔王(Ally),伤害目标,风伯(Enemy),蛮牛冲撞_撞击,伤害=850
-1800,>11:48:04,血量变化,铁扇公主(Ally),变化值=+1500,变动情况=43000=>44500
-1900,>11:48:04,效果触发,铁扇公主(Ally),回复生命,铁扇公主(Ally),芭蕉扇_回春,回复生命值=800
-2000,>11:48:05,血量变化,风伯(Enemy),变化值=-3000,变动情况=61634=>58634
-2500,>11:48:06,血量变化,牛魔王(Ally),变化值=-2000,变动情况=70219=>68219
-2600,>11:48:06,技能释放,牛魔王(Ally),巨力挥击
-2650,>11:48:06,效果触发,牛魔王(Ally),伤害目标,风伯(Enemy),巨力挥击_普攻,伤害=1200
-`;
 
 // --- Components ---
 
@@ -206,7 +184,12 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
           const hpGenericRegex = /(?:^|[\s,;{("])(?:HP|hp|Health|current_hp|生命)\s*=\s*(\d+)/i;
           const hpChangeRegex = /变动情况.*=>\s*(\d+)/;
           const uidRegex = /uid\s*=\s*(\d+)/i;
-          const damageRegex = /伤害=(\d+)/i;
+          
+          // Damage regexes
+          const rawDamageRegex = /施加伤害=(\d+)/i;
+          const hpDeductionRegex = /实际生命扣除=(\d+)/i;
+          const shieldDeductionRegex = /护盾扣除=(\d+)/i;
+
           const healingRegex = /回复生命值=(\d+)/i;
 
           rawRows.forEach((row, idx) => {
@@ -219,7 +202,6 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
             }
 
             // 2. Extract Event Type
-            // User specifies: LogTime, SystemTime, EventType
             const eventType = values.length > 2 ? values[2].trim() : "";
 
             // --- SKILL PARSING ---
@@ -244,16 +226,49 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
                // Damage Logic
                if (values.length > 7 && values[4]?.trim() === '伤害目标') {
                  const effectName = values[6].trim();
-                 const damageStr = values[7];
-                 const damageMatch = damageStr.match(damageRegex);
+                 
+                 // Scan row for damage fields
+                 let rawDamage = 0;
+                 let hpDeduction = 0;
+                 let shieldDeduction = 0;
+                 let foundDamage = false;
 
-                 if (u && effectName && damageMatch) {
-                    const dmg = parseInt(damageMatch[1], 10);
+                 for (const val of values) {
+                    const rMatch = val.match(rawDamageRegex);
+                    if (rMatch) {
+                      rawDamage = parseInt(rMatch[1], 10);
+                      foundDamage = true;
+                    }
+                    const hMatch = val.match(hpDeductionRegex);
+                    if (hMatch) {
+                      hpDeduction = parseInt(hMatch[1], 10);
+                    }
+                    const sMatch = val.match(shieldDeductionRegex);
+                    if (sMatch) {
+                      shieldDeduction = parseInt(sMatch[1], 10);
+                    }
+                 }
+
+                 // Backward compatibility: If no "施加伤害", look for old "伤害="
+                 if (!foundDamage) {
+                    const oldDamageRegex = /伤害=(\d+)/i;
+                    for (const val of values) {
+                        const match = val.match(oldDamageRegex);
+                        if (match) {
+                            rawDamage = parseInt(match[1], 10);
+                            foundDamage = true;
+                        }
+                    }
+                 }
+
+                 if (u && effectName && foundDamage) {
                     effectDamageEntries.push({
                       time,
                       unit: u,
                       effect: effectName,
-                      damage: dmg
+                      rawDamage,
+                      hpDeduction,
+                      shieldDeduction
                     });
                     unitsSet.add(u);
                     if (time < minTime) minTime = time;
@@ -262,8 +277,6 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
                }
                
                // Healing Logic
-               // Format: ... SourceUnit, Action(optional), TargetUnit, EffectName, HealingStr
-               // We look for "回复生命值=..." anywhere in the row if it's an effect event
                let healing = 0;
                let foundHealing = false;
                
@@ -277,7 +290,6 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
                }
 
                if (foundHealing) {
-                  // According to user request: Effect name is in column 7 (index 6)
                   const effectName = values[6]?.trim();
                   
                   if (u && effectName) {
@@ -298,12 +310,10 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
             let hp = -1;
             let foundHp = false;
             
-            // STRICT FILTERING: Only process HP if event type matches '血量变化' or '单位创建'
             const isHpChangeEvent = eventType.includes('血量变化');
             const isUnitCreateEvent = eventType.includes('单位创建');
 
             if (isHpChangeEvent) {
-              // Priority: Look for "A=>B" pattern
               for (const val of values) {
                 const match = val.match(hpChangeRegex);
                 if (match) {
@@ -312,7 +322,6 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
                   break;
                 }
               }
-              // Fallback
               if (!foundHp) {
                  for (const val of values) {
                   const match = val.match(hpGenericRegex);
@@ -324,7 +333,6 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
                 }
               }
             } else if (isUnitCreateEvent) {
-              // For creation, we look for "生命=XXX"
               for (const val of values) {
                 const match = val.match(hpGenericRegex);
                 if (match) {
@@ -335,7 +343,6 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
               }
             }
 
-            // 4. Extract Unit Info for HP events
             let unit = "";
             let uid = "";
 
@@ -413,19 +420,6 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
     }
   };
 
-  const loadDemo = () => {
-    const file = new File([DEMO_CSV], "demo_battle_log.csv", { type: "text/csv" });
-    if (encoding !== "UTF-8") setEncoding("UTF-8");
-    Papa.parse(file, {
-      header: false,
-      skipEmptyLines: true,
-      dynamicTyping: false,
-      complete: () => {
-         processFile(file);
-      }
-    });
-  };
-
   return (
     <div className="space-y-4">
       <div className="flex justify-end mb-2">
@@ -475,20 +469,10 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
           </div>
         </div>
       )}
-
-      <div className="flex justify-center">
-        <button 
-          onClick={loadDemo}
-          className="text-xs text-accent-400 hover:text-accent-300 underline flex items-center gap-2"
-        >
-          <FileText className="w-4 h-4" /> 加载演示数据
-        </button>
-      </div>
     </div>
   );
 };
 
-// Generic Selector for both Skills and Effects
 const GenericSelector = ({ 
   items, 
   selectedItems, 
@@ -537,7 +521,6 @@ const GenericSelector = ({
         <span className="text-xs text-gray-500 ml-auto">{selectedItems.length} 已选</span>
       </div>
       
-      {/* Search */}
       <div className="relative mb-3 shrink-0">
         <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-500" />
         <input 
@@ -554,7 +537,6 @@ const GenericSelector = ({
         )}
       </div>
 
-      {/* Toolbar */}
       <div className="flex justify-between items-center mb-2 px-1 shrink-0">
         <button onClick={selectAll} className="text-xs text-accent-400 hover:text-accent-300">
            {filteredItems.every(s => selectedItems.includes(s)) && filteredItems.length > 0 ? "取消全选" : "全选当前"}
@@ -566,7 +548,6 @@ const GenericSelector = ({
         )}
       </div>
 
-      {/* List */}
       <div className="flex-1 overflow-y-auto pr-1 space-y-1 custom-scrollbar">
         {filteredItems.length === 0 ? (
           <div className="text-center text-gray-500 py-8 text-sm">
@@ -609,7 +590,6 @@ const SkillChart = ({ data, selectedUnits, selectedSkills }: { data: SkillEntry[
   const chartData = useMemo(() => {
     if (!selectedUnits.length || !data.length) return { data: [], keys: [] };
 
-    // Filter by selected units AND selected skills
     const relevantEntries = data.filter(e => 
       selectedUnits.includes(e.unit) && 
       selectedSkills.includes(e.skill)
@@ -617,12 +597,10 @@ const SkillChart = ({ data, selectedUnits, selectedSkills }: { data: SkillEntry[
     
     if (relevantEntries.length === 0) return { data: [], keys: [] };
 
-    // Identify all unique (Unit, Skill) keys
     const keys = new Set<string>();
     relevantEntries.forEach(e => keys.add(`${e.unit} - ${e.skill}`));
     const sortedKeys = Array.from(keys).sort();
 
-    // Group by time
     const entriesByTime = new Map<number, SkillEntry[]>();
     const timestamps = new Set<number>();
     
@@ -636,18 +614,15 @@ const SkillChart = ({ data, selectedUnits, selectedSkills }: { data: SkillEntry[
     const result = [];
     const counters: Record<string, number> = {};
 
-    // Initialize counters
     sortedKeys.forEach(k => counters[k] = 0);
 
     for (const t of sortedTimestamps) {
       const events = entriesByTime.get(t) || [];
-      // Increment counters
       events.forEach(e => {
         const key = `${e.unit} - ${e.skill}`;
         counters[key] = (counters[key] || 0) + 1;
       });
 
-      // Create data point
       const point: any = { time: t };
       let hasData = false;
       sortedKeys.forEach(k => {
@@ -732,11 +707,24 @@ const SkillChart = ({ data, selectedUnits, selectedSkills }: { data: SkillEntry[
   );
 };
 
-const EffectDamageChart = ({ data, selectedUnits, selectedEffects }: { data: EffectDamageEntry[], selectedUnits: string[], selectedEffects: string[] }) => {
+const EffectDamageChart = ({ 
+  data, 
+  selectedUnits, 
+  selectedEffects,
+  showRaw,
+  showHp,
+  showShield
+}: { 
+  data: EffectDamageEntry[], 
+  selectedUnits: string[], 
+  selectedEffects: string[],
+  showRaw: boolean,
+  showHp: boolean,
+  showShield: boolean
+}) => {
   const chartData = useMemo(() => {
     if (!selectedUnits.length || !data.length) return { data: [], keys: [] };
 
-    // Filter by selected units AND selected effects
     const relevantEntries = data.filter(e => 
       selectedUnits.includes(e.unit) && 
       selectedEffects.includes(e.effect)
@@ -744,12 +732,10 @@ const EffectDamageChart = ({ data, selectedUnits, selectedEffects }: { data: Eff
     
     if (relevantEntries.length === 0) return { data: [], keys: [] };
 
-    // Identify all unique (Unit, Effect) keys
     const keys = new Set<string>();
     relevantEntries.forEach(e => keys.add(`${e.unit} - ${e.effect}`));
     const sortedKeys = Array.from(keys).sort();
 
-    // Group by time
     const entriesByTime = new Map<number, EffectDamageEntry[]>();
     const timestamps = new Set<number>();
     
@@ -761,21 +747,22 @@ const EffectDamageChart = ({ data, selectedUnits, selectedEffects }: { data: Eff
 
     const sortedTimestamps = Array.from(timestamps).sort((a, b) => a - b);
     const result = [];
-    // Counters now track cumulative damage
     const cumulativeDamage: Record<string, number> = {};
 
-    // Initialize counters
     sortedKeys.forEach(k => cumulativeDamage[k] = 0);
 
     for (const t of sortedTimestamps) {
       const events = entriesByTime.get(t) || [];
-      // Accumulate damage
       events.forEach(e => {
         const key = `${e.unit} - ${e.effect}`;
-        cumulativeDamage[key] = (cumulativeDamage[key] || 0) + e.damage;
+        let val = 0;
+        if (showRaw) val += e.rawDamage || 0;
+        if (showHp) val += e.hpDeduction || 0;
+        if (showShield) val += e.shieldDeduction || 0;
+        
+        cumulativeDamage[key] = (cumulativeDamage[key] || 0) + val;
       });
 
-      // Create data point
       const point: any = { time: t };
       let hasData = false;
       sortedKeys.forEach(k => {
@@ -789,7 +776,7 @@ const EffectDamageChart = ({ data, selectedUnits, selectedEffects }: { data: Eff
     }
 
     return { data: result, keys: sortedKeys };
-  }, [data, selectedUnits, selectedEffects]);
+  }, [data, selectedUnits, selectedEffects, showRaw, showHp, showShield]);
 
   if (selectedUnits.length === 0) {
     return (
@@ -834,7 +821,7 @@ const EffectDamageChart = ({ data, selectedUnits, selectedEffects }: { data: Eff
               stroke="#9ca3af" 
               tick={{ fill: '#9ca3af', fontSize: 12 }}
               domain={['auto', 'auto']}
-              label={{ value: '累计伤害', angle: -90, position: 'insideLeft', fill: '#6b7280' }}
+              label={{ value: '累计数值', angle: -90, position: 'insideLeft', fill: '#6b7280' }}
             />
             <Tooltip content={<CustomTooltip />} />
             <Legend verticalAlign="top" height={36}/>
@@ -863,7 +850,6 @@ const EffectHealingChart = ({ data, selectedUnits, selectedEffects }: { data: Ef
   const chartData = useMemo(() => {
     if (!selectedUnits.length || !data.length) return { data: [], keys: [] };
 
-    // Filter by selected units AND selected effects
     const relevantEntries = data.filter(e => 
       selectedUnits.includes(e.unit) && 
       selectedEffects.includes(e.effect)
@@ -871,12 +857,10 @@ const EffectHealingChart = ({ data, selectedUnits, selectedEffects }: { data: Ef
     
     if (relevantEntries.length === 0) return { data: [], keys: [] };
 
-    // Identify all unique (Unit, Effect) keys
     const keys = new Set<string>();
     relevantEntries.forEach(e => keys.add(`${e.unit} - ${e.effect}`));
     const sortedKeys = Array.from(keys).sort();
 
-    // Group by time
     const entriesByTime = new Map<number, EffectHealingEntry[]>();
     const timestamps = new Set<number>();
     
@@ -888,21 +872,17 @@ const EffectHealingChart = ({ data, selectedUnits, selectedEffects }: { data: Ef
 
     const sortedTimestamps = Array.from(timestamps).sort((a, b) => a - b);
     const result = [];
-    // Counters track cumulative healing
     const cumulativeHealing: Record<string, number> = {};
 
-    // Initialize counters
     sortedKeys.forEach(k => cumulativeHealing[k] = 0);
 
     for (const t of sortedTimestamps) {
       const events = entriesByTime.get(t) || [];
-      // Accumulate healing
       events.forEach(e => {
         const key = `${e.unit} - ${e.effect}`;
         cumulativeHealing[key] = (cumulativeHealing[key] || 0) + e.healing;
       });
 
-      // Create data point
       const point: any = { time: t };
       let hasData = false;
       sortedKeys.forEach(k => {
@@ -987,39 +967,27 @@ const EffectHealingChart = ({ data, selectedUnits, selectedEffects }: { data: Ef
 };
 
 const HpChart = ({ data, selectedUnits }: { data: LogEntry[], selectedUnits: string[] }) => {
-  // Pivot data for Multi-Line Chart
   const chartData = useMemo(() => {
     if (!selectedUnits.length || !data.length) return [];
 
-    // 1. Filter only relevant entries
     const relevantEntries = data.filter(e => selectedUnits.includes(e.unit));
-    
-    // 2. Collect all unique timestamps
     const timestamps = Array.from(new Set(relevantEntries.map(e => e.time))).sort((a, b) => a - b);
     
-    // 3. Build data points with Fill-Forward logic
     const result = [];
     const currentHp: Record<string, number | null> = {};
     
-    // Group entries by time for efficiency
     const entriesByTime = new Map<number, LogEntry[]>();
     for (const e of relevantEntries) {
       if (!entriesByTime.has(e.time)) entriesByTime.set(e.time, []);
       entriesByTime.get(e.time)!.push(e);
     }
-
-    // Initialize/find starting HPs if possible (optional, but good for starting from time 0)
-    // For simplicity, we just iterate time. If a unit hasn't appeared yet, it's null (no line drawn).
     
     for (const t of timestamps) {
       const events = entriesByTime.get(t) || [];
-      
-      // Update known HP values
       for (const e of events) {
         currentHp[e.unit] = e.hp;
       }
       
-      // Construct data point
       const point: any = { time: t };
       let hasData = false;
       selectedUnits.forEach(u => {
@@ -1036,8 +1004,6 @@ const HpChart = ({ data, selectedUnits }: { data: LogEntry[], selectedUnits: str
     return result;
   }, [data, selectedUnits]);
 
-  // Calculate single unit stats only if exactly one is selected
-  // MOVED UP to avoid React Hook conditional execution error
   const singleUnitStats = useMemo(() => {
     if (selectedUnits.length !== 1) return null;
     const unit = selectedUnits[0];
@@ -1064,7 +1030,6 @@ const HpChart = ({ data, selectedUnits }: { data: LogEntry[], selectedUnits: str
 
   return (
     <div className="h-full flex flex-col gap-4">
-      {/* Mini Stats Cards - Show only if single unit selected */}
       {singleUnitStats ? (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-fade-in shrink-0">
           <div className="bg-gray-800/50 p-4 rounded-lg border border-gray-700">
@@ -1090,7 +1055,6 @@ const HpChart = ({ data, selectedUnits }: { data: LogEntry[], selectedUnits: str
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-fade-in shrink-0">
              {selectedUnits.map((u, idx) => {
-               // Find latest HP for this unit in chartData
                const lastPoint = chartData[chartData.length - 1];
                const hp = lastPoint ? lastPoint[u] : 0;
                const color = COLORS[idx % COLORS.length];
@@ -1107,7 +1071,6 @@ const HpChart = ({ data, selectedUnits }: { data: LogEntry[], selectedUnits: str
         </div>
       )}
 
-      {/* Main Chart */}
       <div className="bg-gray-800/30 rounded-xl p-4 border border-gray-700 flex-1 min-h-0">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
@@ -1136,7 +1099,7 @@ const HpChart = ({ data, selectedUnits }: { data: LogEntry[], selectedUnits: str
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 6, strokeWidth: 2 }}
-                connectNulls // Connect points if data is sparse to maintain continuity
+                connectNulls 
                 animationDuration={1000}
               />
             ))}
@@ -1171,7 +1134,6 @@ const UnitSelector = ({
   };
 
   const selectAll = () => {
-     // If search is active, only select visible. If all visible selected, deselect them.
      const allVisibleSelected = filteredUnits.every(u => selectedUnits.includes(u));
      if (allVisibleSelected) {
        const newSelection = selectedUnits.filter(u => !filteredUnits.includes(u));
@@ -1190,7 +1152,6 @@ const UnitSelector = ({
         <span className="text-xs text-gray-500 ml-auto">{selectedUnits.length} 已选</span>
       </div>
       
-      {/* Search */}
       <div className="relative mb-3 shrink-0">
         <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-500" />
         <input 
@@ -1207,7 +1168,6 @@ const UnitSelector = ({
         )}
       </div>
 
-      {/* Toolbar */}
       <div className="flex justify-between items-center mb-2 px-1 shrink-0">
         <button onClick={selectAll} className="text-xs text-accent-400 hover:text-accent-300">
            {filteredUnits.every(u => selectedUnits.includes(u)) && filteredUnits.length > 0 ? "取消全选" : "全选当前"}
@@ -1219,7 +1179,6 @@ const UnitSelector = ({
         )}
       </div>
 
-      {/* List */}
       <div className="flex-1 overflow-y-auto pr-1 space-y-1 custom-scrollbar">
         {filteredUnits.length === 0 ? (
           <div className="text-center text-gray-500 py-8 text-sm">
@@ -1228,7 +1187,6 @@ const UnitSelector = ({
         ) : (
           filteredUnits.map(unit => {
             const isSelected = selectedUnits.includes(unit);
-            // Find color index if selected
             const colorIndex = selectedUnits.indexOf(unit);
             const color = isSelected && colorIndex !== -1 ? COLORS[colorIndex % COLORS.length] : undefined;
 
@@ -1268,23 +1226,25 @@ const App = () => {
   const [selectedEffects, setSelectedEffects] = useState<string[]>([]);
   const [selectedHealingEffects, setSelectedHealingEffects] = useState<string[]>([]);
   const [chartMode, setChartMode] = useState<'hp' | 'skill' | 'effect' | 'healing'>('hp');
+  
+  // Damage Statistics Modes
+  const [dmgModeRaw, setDmgModeRaw] = useState(true);
+  const [dmgModeHp, setDmgModeHp] = useState(false);
+  const [dmgModeShield, setDmgModeShield] = useState(false);
 
   const handleDataLoaded = (processed: ProcessedData, name: string) => {
     setData(processed);
     setFileName(name);
-    // Auto-select first 3 units to show something immediately
     if (processed.units.length > 0) {
       setSelectedUnits(processed.units.slice(0, 3));
     } else {
       setSelectedUnits([]);
     }
-    // Reset secondary selections
     setSelectedSkills([]);
     setSelectedEffects([]);
     setSelectedHealingEffects([]);
   };
 
-  // Derive available skills based on selected units
   const availableSkills = useMemo(() => {
     if (!data || selectedUnits.length === 0) return [];
     const skills = new Set<string>();
@@ -1296,7 +1256,6 @@ const App = () => {
     return Array.from(skills).sort();
   }, [data, selectedUnits]);
 
-  // Derive available effects based on selected units
   const availableEffects = useMemo(() => {
     if (!data || selectedUnits.length === 0) return [];
     const effects = new Set<string>();
@@ -1308,7 +1267,6 @@ const App = () => {
     return Array.from(effects).sort();
   }, [data, selectedUnits]);
 
-  // Derive available healing effects
   const availableHealingEffects = useMemo(() => {
     if (!data || selectedUnits.length === 0) return [];
     const effects = new Set<string>();
@@ -1320,7 +1278,6 @@ const App = () => {
     return Array.from(effects).sort();
   }, [data, selectedUnits]);
 
-  // Auto-select logic
   useEffect(() => {
     if (chartMode === 'skill' && availableSkills.length > 0 && selectedSkills.length === 0) {
        setSelectedSkills(availableSkills);
@@ -1347,9 +1304,40 @@ const App = () => {
      return '效果治疗统计';
   };
 
+  const handleRawChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const checked = e.target.checked;
+    setDmgModeRaw(checked);
+    if (checked) {
+        setDmgModeHp(false);
+        setDmgModeShield(false);
+    } else if (!dmgModeHp && !dmgModeShield) {
+        setDmgModeRaw(true);
+    }
+  };
+
+  const handleHpChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const checked = e.target.checked;
+    setDmgModeHp(checked);
+    if (checked) {
+        setDmgModeRaw(false);
+    } else if (!dmgModeShield) {
+        setDmgModeRaw(true);
+    }
+  };
+
+  const handleShieldChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const checked = e.target.checked;
+    setDmgModeShield(checked);
+    if (checked) {
+        setDmgModeRaw(false);
+    } else if (!dmgModeHp) {
+        setDmgModeRaw(true);
+    }
+  };
+
+
   return (
     <div className="h-screen flex flex-col font-sans selection:bg-accent-500/30 overflow-hidden">
-      {/* Header */}
       <header className="bg-gray-900 border-b border-gray-800 flex-shrink-0 h-16">
         <div className="max-w-[1920px] mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -1358,17 +1346,15 @@ const App = () => {
             </div>
             <h1 className="text-xl font-bold tracking-tight text-white">即时战斗 <span className="text-accent-400">战报分析器</span></h1>
           </div>
-          <div className="text-sm text-gray-500 font-mono">v1.8.0 (Healing Support)</div>
+          <div className="text-sm text-gray-500 font-mono">v1.9.0 (Dmg Stats)</div>
         </div>
       </header>
 
       <main className="flex-1 w-full max-w-[1920px] mx-auto px-4 sm:px-6 lg:px-8 py-4 overflow-hidden">
         <div className="flex flex-col lg:flex-row gap-4 h-full">
           
-          {/* COLUMN 1: Data Source AND Unit Selection */}
           <div className="w-full lg:w-[320px] flex-shrink-0 flex flex-col gap-4 h-full min-h-0">
              
-             {/* Data Source Panel */}
              <div className={`bg-gray-900 rounded-xl p-1 shadow-lg shadow-black/20 flex flex-col ${!data ? 'h-full' : 'flex-shrink-0'}`}>
                 <div className={`bg-gray-800/50 rounded-lg p-4 border border-gray-700 flex flex-col overflow-y-auto custom-scrollbar ${!data ? 'h-full' : ''}`}>
                   <div className="flex items-center justify-between mb-4 shrink-0">
@@ -1416,7 +1402,6 @@ const App = () => {
                 </div>
              </div>
 
-             {/* Unit Selection Panel (Stacked below Data Source) */}
              {data && (
                 <div className="bg-gray-900 rounded-xl p-1 shadow-lg shadow-black/20 flex-1 min-h-0 flex flex-col animate-fade-in-up">
                    <UnitSelector 
@@ -1428,7 +1413,6 @@ const App = () => {
              )}
           </div>
 
-          {/* COLUMN 2: Skill/Effect Selection Panel (Right of Unit Selector) */}
           {data && (chartMode === 'skill' || chartMode === 'effect' || chartMode === 'healing') && (
              <div className="w-full lg:w-[300px] flex-shrink-0 flex flex-col h-full min-h-0">
                <div className="bg-gray-900 rounded-xl p-1 shadow-lg shadow-black/20 h-full flex flex-col animate-fade-in-up">
@@ -1466,7 +1450,6 @@ const App = () => {
              </div>
           )}
 
-          {/* COLUMN 3: Chart Panel (Rest of space) */}
           <div className="flex-1 min-w-0 flex flex-col h-full min-h-0">
               <div className="bg-gray-900 rounded-xl p-1 shadow-lg shadow-black/20 h-full flex flex-col">
                 <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700 h-full flex flex-col">
@@ -1483,9 +1466,43 @@ const App = () => {
                       ) : (
                         <p className="text-sm text-gray-500 mt-1">请选择单位开始分析</p>
                       )}
+                      
+                      {/* Damage Statistics Options */}
+                      {chartMode === 'effect' && (
+                         <div className="flex items-center gap-4 mt-3 bg-gray-900/50 p-2 rounded-lg border border-gray-700/50 text-sm animate-fade-in">
+                           <span className="text-gray-400 font-medium text-xs uppercase tracking-wider">统计维度:</span>
+                           <label className="flex items-center gap-2 cursor-pointer hover:text-white transition-colors">
+                             <input 
+                               type="checkbox" 
+                               checked={dmgModeRaw} 
+                               onChange={handleRawChange}
+                               className="rounded bg-gray-700 border-gray-600 text-accent-500 focus:ring-accent-500 focus:ring-offset-gray-900" 
+                             /> 
+                             <span>原始伤害</span>
+                           </label>
+                           <div className="w-px h-4 bg-gray-700"></div>
+                           <label className="flex items-center gap-2 cursor-pointer hover:text-white transition-colors">
+                             <input 
+                               type="checkbox" 
+                               checked={dmgModeHp} 
+                               onChange={handleHpChange}
+                               className="rounded bg-gray-700 border-gray-600 text-accent-500 focus:ring-accent-500 focus:ring-offset-gray-900" 
+                             /> 
+                             <span>实际生命扣除</span>
+                           </label>
+                           <label className="flex items-center gap-2 cursor-pointer hover:text-white transition-colors">
+                             <input 
+                               type="checkbox" 
+                               checked={dmgModeShield} 
+                               onChange={handleShieldChange}
+                               className="rounded bg-gray-700 border-gray-600 text-accent-500 focus:ring-accent-500 focus:ring-offset-gray-900" 
+                             /> 
+                             <span>护盾扣除</span>
+                           </label>
+                         </div>
+                      )}
                     </div>
 
-                    {/* Chart Mode Toggle */}
                     <div className="flex bg-gray-900 p-1 rounded-lg border border-gray-700">
                       <button
                         onClick={() => setChartMode('hp')}
@@ -1550,6 +1567,9 @@ const App = () => {
                              data={data.effectDamageEntries}
                              selectedUnits={selectedUnits}
                              selectedEffects={selectedEffects}
+                             showRaw={dmgModeRaw}
+                             showHp={dmgModeHp}
+                             showShield={dmgModeShield}
                            />
                         )}
                         {chartMode === 'healing' && (
