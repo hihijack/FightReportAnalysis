@@ -1344,9 +1344,9 @@ const App = () => {
             <div className="bg-gradient-to-br from-accent-500 to-blue-600 p-2 rounded-lg">
               <Sword className="w-5 h-5 text-white" />
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-white">即时战斗 <span className="text-accent-400">战报分析器</span></h1>
+            <h1 className="text-xl font-bold tracking-tight text-white">P35 <span className="text-accent-400">战报分析器</span></h1>
           </div>
-          <div className="text-sm text-gray-500 font-mono">v1.9.0 (Dmg Stats)</div>
+          <div className="text-sm text-gray-500 font-mono">v1.9.1 (作者: linhj)</div>
         </div>
       </header>
 
