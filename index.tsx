@@ -26,7 +26,8 @@ import {
   X,
   Zap,
   Filter,
-  Flame
+  Flame,
+  Heart
 } from 'https://esm.sh/lucide-react@0.344.0?external=react';
 
 // --- Types ---
@@ -51,10 +52,18 @@ interface EffectDamageEntry {
   damage: number;
 }
 
+interface EffectHealingEntry {
+  time: number;
+  unit: string;
+  effect: string;
+  healing: number;
+}
+
 interface ProcessedData {
   entries: LogEntry[];
   skillEntries: SkillEntry[];
   effectDamageEntries: EffectDamageEntry[];
+  effectHealingEntries: EffectHealingEntry[];
   units: string[];
   timeRange: [number, number];
 }
@@ -87,10 +96,12 @@ const DEMO_CSV = `Time,LogContent
 1200,>11:48:03,技能释放,风伯(Enemy),风卷残云
 1250,>11:48:03,效果触发,风伯(Enemy),伤害目标,牛魔王(Ally),风卷残云_风刃,伤害=450
 1300,>11:48:03,效果触发,风伯(Enemy),伤害目标,铁扇公主(Ally),风卷残云_风刃,伤害=450
+1350,>11:48:03,效果触发,铁扇公主(Ally),回复生命,牛魔王(Ally),芭蕉扇_治愈,回复生命值=1500
 1500,>11:48:04,血量变化,牛魔王(Ally),变化值=-500,变动情况=70719=>70219
 1600,>11:48:04,技能释放,牛魔王(Ally),蛮牛冲撞
 1650,>11:48:04,效果触发,牛魔王(Ally),伤害目标,风伯(Enemy),蛮牛冲撞_撞击,伤害=850
 1800,>11:48:04,血量变化,铁扇公主(Ally),变化值=+1500,变动情况=43000=>44500
+1900,>11:48:04,效果触发,铁扇公主(Ally),回复生命,铁扇公主(Ally),芭蕉扇_回春,回复生命值=800
 2000,>11:48:05,血量变化,风伯(Enemy),变化值=-3000,变动情况=61634=>58634
 2500,>11:48:06,血量变化,牛魔王(Ally),变化值=-2000,变动情况=70219=>68219
 2600,>11:48:06,技能释放,牛魔王(Ally),巨力挥击
@@ -150,6 +161,7 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
         const entries: LogEntry[] = [];
         const skillEntries: SkillEntry[] = [];
         const effectDamageEntries: EffectDamageEntry[] = [];
+        const effectHealingEntries: EffectHealingEntry[] = [];
         const unitsSet = new Set<string>();
         let minTime = Infinity;
         let maxTime = -Infinity;
@@ -195,6 +207,7 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
           const hpChangeRegex = /变动情况.*=>\s*(\d+)/;
           const uidRegex = /uid\s*=\s*(\d+)/i;
           const damageRegex = /伤害=(\d+)/i;
+          const healingRegex = /回复生命值=(\d+)/i;
 
           rawRows.forEach((row, idx) => {
             const values = row.map(String);
@@ -223,27 +236,61 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
                }
             }
 
-            // --- EFFECT DAMAGE PARSING ---
-            // Requirement: 效果触发 in Col 3 (index 2), 伤害目标 in Col 5 (index 4)
-            // Format: Time, SysTime, 效果触发, SourceUnit, 伤害目标, TargetUnit, EffectName, 伤害=A
+            // --- EFFECT DAMAGE & HEALING PARSING ---
             const isEffectEvent = eventType.includes('效果触发');
-            if (isEffectEvent && values.length > 7 && values[4]?.trim() === '伤害目标') {
+            if (isEffectEvent && values.length > 6) {
                const u = values[3].trim(); // Source Unit
-               const effectName = values[6].trim();
-               const damageStr = values[7];
-               const damageMatch = damageStr.match(damageRegex);
+               
+               // Damage Logic
+               if (values.length > 7 && values[4]?.trim() === '伤害目标') {
+                 const effectName = values[6].trim();
+                 const damageStr = values[7];
+                 const damageMatch = damageStr.match(damageRegex);
 
-               if (u && effectName && damageMatch) {
-                  const dmg = parseInt(damageMatch[1], 10);
-                  effectDamageEntries.push({
-                    time,
-                    unit: u,
-                    effect: effectName,
-                    damage: dmg
-                  });
-                  unitsSet.add(u);
-                  if (time < minTime) minTime = time;
-                  if (time > maxTime) maxTime = time;
+                 if (u && effectName && damageMatch) {
+                    const dmg = parseInt(damageMatch[1], 10);
+                    effectDamageEntries.push({
+                      time,
+                      unit: u,
+                      effect: effectName,
+                      damage: dmg
+                    });
+                    unitsSet.add(u);
+                    if (time < minTime) minTime = time;
+                    if (time > maxTime) maxTime = time;
+                 }
+               }
+               
+               // Healing Logic
+               // Format: ... SourceUnit, Action(optional), TargetUnit, EffectName, HealingStr
+               // We look for "回复生命值=..." anywhere in the row if it's an effect event
+               let healing = 0;
+               let foundHealing = false;
+               
+               for (const val of values) {
+                 const match = val.match(healingRegex);
+                 if (match) {
+                   healing = parseInt(match[1], 10);
+                   foundHealing = true;
+                   break;
+                 }
+               }
+
+               if (foundHealing) {
+                  // According to user request: Effect name is in column 7 (index 6)
+                  const effectName = values[6]?.trim();
+                  
+                  if (u && effectName) {
+                     effectHealingEntries.push({
+                       time,
+                       unit: u,
+                       effect: effectName,
+                       healing: healing
+                     });
+                     unitsSet.add(u);
+                     if (time < minTime) minTime = time;
+                     if (time > maxTime) maxTime = time;
+                  }
                }
             }
 
@@ -337,7 +384,7 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
           });
         }
 
-        if (entries.length === 0 && skillEntries.length === 0 && effectDamageEntries.length === 0) {
+        if (entries.length === 0 && skillEntries.length === 0 && effectDamageEntries.length === 0 && effectHealingEntries.length === 0) {
           setError(`解析了 ${rawRows.length} 行，但未找到有效的战报数据。
             支持格式：逻辑时间, 系统时间, 效果类型(如'血量变化', '技能释放', '效果触发')...
             如果是中文日志，请尝试切换右上角的“编码”选项 (如 GBK)。`);
@@ -348,6 +395,7 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
           entries,
           skillEntries,
           effectDamageEntries,
+          effectHealingEntries,
           units: Array.from(unitsSet).sort(),
           timeRange: [minTime, maxTime]
         }, file.name);
@@ -811,6 +859,133 @@ const EffectDamageChart = ({ data, selectedUnits, selectedEffects }: { data: Eff
   );
 };
 
+const EffectHealingChart = ({ data, selectedUnits, selectedEffects }: { data: EffectHealingEntry[], selectedUnits: string[], selectedEffects: string[] }) => {
+  const chartData = useMemo(() => {
+    if (!selectedUnits.length || !data.length) return { data: [], keys: [] };
+
+    // Filter by selected units AND selected effects
+    const relevantEntries = data.filter(e => 
+      selectedUnits.includes(e.unit) && 
+      selectedEffects.includes(e.effect)
+    );
+    
+    if (relevantEntries.length === 0) return { data: [], keys: [] };
+
+    // Identify all unique (Unit, Effect) keys
+    const keys = new Set<string>();
+    relevantEntries.forEach(e => keys.add(`${e.unit} - ${e.effect}`));
+    const sortedKeys = Array.from(keys).sort();
+
+    // Group by time
+    const entriesByTime = new Map<number, EffectHealingEntry[]>();
+    const timestamps = new Set<number>();
+    
+    relevantEntries.forEach(e => {
+      timestamps.add(e.time);
+      if (!entriesByTime.has(e.time)) entriesByTime.set(e.time, []);
+      entriesByTime.get(e.time)!.push(e);
+    });
+
+    const sortedTimestamps = Array.from(timestamps).sort((a, b) => a - b);
+    const result = [];
+    // Counters track cumulative healing
+    const cumulativeHealing: Record<string, number> = {};
+
+    // Initialize counters
+    sortedKeys.forEach(k => cumulativeHealing[k] = 0);
+
+    for (const t of sortedTimestamps) {
+      const events = entriesByTime.get(t) || [];
+      // Accumulate healing
+      events.forEach(e => {
+        const key = `${e.unit} - ${e.effect}`;
+        cumulativeHealing[key] = (cumulativeHealing[key] || 0) + e.healing;
+      });
+
+      // Create data point
+      const point: any = { time: t };
+      let hasData = false;
+      sortedKeys.forEach(k => {
+        if (cumulativeHealing[k] > 0) {
+           point[k] = cumulativeHealing[k];
+           hasData = true;
+        }
+      });
+      
+      if (hasData) result.push(point);
+    }
+
+    return { data: result, keys: sortedKeys };
+  }, [data, selectedUnits, selectedEffects]);
+
+  if (selectedUnits.length === 0) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-4 min-h-[400px]">
+        <Users className="w-16 h-16 opacity-20" />
+        <p>请选择单位以查看效果治疗</p>
+      </div>
+    );
+  }
+
+  if (selectedEffects.length === 0) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-4 min-h-[400px]">
+        <Filter className="w-16 h-16 opacity-20" />
+        <p>请选择需要关注的治疗效果</p>
+      </div>
+    );
+  }
+
+  if (!chartData || chartData.data.length === 0) {
+    return (
+       <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-4 min-h-[400px]">
+        <Heart className="w-16 h-16 opacity-20" />
+        <p>所选单位在此期间没有触发所选效果的治疗</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col gap-4">
+       <div className="bg-gray-800/30 rounded-xl p-4 border border-gray-700 flex-1 min-h-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={chartData.data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
+            <XAxis 
+              dataKey="time" 
+              stroke="#9ca3af" 
+              tick={{ fill: '#9ca3af', fontSize: 12 }}
+              label={{ value: '时间轴 (Time)', position: 'insideBottomRight', offset: -10, fill: '#6b7280' }}
+            />
+            <YAxis 
+              stroke="#9ca3af" 
+              tick={{ fill: '#9ca3af', fontSize: 12 }}
+              domain={['auto', 'auto']}
+              label={{ value: '累计治疗量', angle: -90, position: 'insideLeft', fill: '#6b7280' }}
+            />
+            <Tooltip content={<CustomTooltip />} />
+            <Legend verticalAlign="top" height={36}/>
+            
+            {chartData.keys.map((key, index) => (
+              <Line 
+                key={key}
+                type="stepAfter" 
+                dataKey={key} 
+                name={key}
+                stroke={COLORS[index % COLORS.length]} 
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 6, strokeWidth: 2 }}
+                animationDuration={1000}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+};
+
 const HpChart = ({ data, selectedUnits }: { data: LogEntry[], selectedUnits: string[] }) => {
   // Pivot data for Multi-Line Chart
   const chartData = useMemo(() => {
@@ -1091,7 +1266,8 @@ const App = () => {
   const [selectedUnits, setSelectedUnits] = useState<string[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedEffects, setSelectedEffects] = useState<string[]>([]);
-  const [chartMode, setChartMode] = useState<'hp' | 'skill' | 'effect'>('hp');
+  const [selectedHealingEffects, setSelectedHealingEffects] = useState<string[]>([]);
+  const [chartMode, setChartMode] = useState<'hp' | 'skill' | 'effect' | 'healing'>('hp');
 
   const handleDataLoaded = (processed: ProcessedData, name: string) => {
     setData(processed);
@@ -1105,6 +1281,7 @@ const App = () => {
     // Reset secondary selections
     setSelectedSkills([]);
     setSelectedEffects([]);
+    setSelectedHealingEffects([]);
   };
 
   // Derive available skills based on selected units
@@ -1131,6 +1308,18 @@ const App = () => {
     return Array.from(effects).sort();
   }, [data, selectedUnits]);
 
+  // Derive available healing effects
+  const availableHealingEffects = useMemo(() => {
+    if (!data || selectedUnits.length === 0) return [];
+    const effects = new Set<string>();
+    data.effectHealingEntries.forEach(e => {
+      if (selectedUnits.includes(e.unit)) {
+        effects.add(e.effect);
+      }
+    });
+    return Array.from(effects).sort();
+  }, [data, selectedUnits]);
+
   // Auto-select logic
   useEffect(() => {
     if (chartMode === 'skill' && availableSkills.length > 0 && selectedSkills.length === 0) {
@@ -1139,18 +1328,23 @@ const App = () => {
     if (chartMode === 'effect' && availableEffects.length > 0 && selectedEffects.length === 0) {
        setSelectedEffects(availableEffects);
     }
-  }, [chartMode, availableSkills.length, availableEffects.length]);
+    if (chartMode === 'healing' && availableHealingEffects.length > 0 && selectedHealingEffects.length === 0) {
+       setSelectedHealingEffects(availableHealingEffects);
+    }
+  }, [chartMode, availableSkills.length, availableEffects.length, availableHealingEffects.length]);
 
   const getChartIcon = (mode: string) => {
      if (mode === 'hp') return <Activity className="w-6 h-6 text-accent-400" />;
      if (mode === 'skill') return <Zap className="w-6 h-6 text-yellow-400" />;
-     return <Flame className="w-6 h-6 text-orange-500" />;
+     if (mode === 'effect') return <Flame className="w-6 h-6 text-orange-500" />;
+     return <Heart className="w-6 h-6 text-emerald-500" />;
   };
 
   const getChartTitle = (mode: string) => {
      if (mode === 'hp') return '血量对比分析';
      if (mode === 'skill') return '技能释放统计';
-     return '效果累计伤害';
+     if (mode === 'effect') return '效果累计伤害';
+     return '效果治疗统计';
   };
 
   return (
@@ -1164,7 +1358,7 @@ const App = () => {
             </div>
             <h1 className="text-xl font-bold tracking-tight text-white">即时战斗 <span className="text-accent-400">战报分析器</span></h1>
           </div>
-          <div className="text-sm text-gray-500 font-mono">v1.7.0 (Horizontal Layout)</div>
+          <div className="text-sm text-gray-500 font-mono">v1.8.0 (Healing Support)</div>
         </div>
       </header>
 
@@ -1206,7 +1400,7 @@ const App = () => {
                                </div>
                                <div className="text-xs text-gray-500 flex justify-between">
                                  <span>效果记录:</span> 
-                                 <span className="text-gray-300">{data.effectDamageEntries.length.toLocaleString()}</span>
+                                 <span className="text-gray-300">{(data.effectDamageEntries.length + data.effectHealingEntries.length).toLocaleString()}</span>
                                </div>
                           </div>
                         </div>
@@ -1235,7 +1429,7 @@ const App = () => {
           </div>
 
           {/* COLUMN 2: Skill/Effect Selection Panel (Right of Unit Selector) */}
-          {data && (chartMode === 'skill' || chartMode === 'effect') && (
+          {data && (chartMode === 'skill' || chartMode === 'effect' || chartMode === 'healing') && (
              <div className="w-full lg:w-[300px] flex-shrink-0 flex flex-col h-full min-h-0">
                <div className="bg-gray-900 rounded-xl p-1 shadow-lg shadow-black/20 h-full flex flex-col animate-fade-in-up">
                   {chartMode === 'skill' && (
@@ -1256,6 +1450,16 @@ const App = () => {
                       title="效果筛选"
                       emptyMessage="未找到匹配效果"
                       icon={Flame}
+                    />
+                  )}
+                  {chartMode === 'healing' && (
+                    <GenericSelector 
+                      items={availableHealingEffects}
+                      selectedItems={selectedHealingEffects}
+                      onChange={setSelectedHealingEffects}
+                      title="治疗筛选"
+                      emptyMessage="未找到匹配治疗效果"
+                      icon={Heart}
                     />
                   )}
                </div>
@@ -1289,9 +1493,10 @@ const App = () => {
                           ${chartMode === 'hp' 
                             ? 'bg-gray-700 text-white shadow' 
                             : 'text-gray-400 hover:text-gray-200'}`}
+                        title="血量曲线"
                       >
                         <Activity className="w-4 h-4" />
-                        血量
+                        <span className="hidden xl:inline">血量</span>
                       </button>
                       <button
                         onClick={() => setChartMode('skill')}
@@ -1299,9 +1504,10 @@ const App = () => {
                           ${chartMode === 'skill' 
                             ? 'bg-gray-700 text-white shadow' 
                             : 'text-gray-400 hover:text-gray-200'}`}
+                        title="技能统计"
                       >
                         <Zap className="w-4 h-4" />
-                        技能
+                        <span className="hidden xl:inline">技能</span>
                       </button>
                        <button
                         onClick={() => setChartMode('effect')}
@@ -1309,9 +1515,21 @@ const App = () => {
                           ${chartMode === 'effect' 
                             ? 'bg-gray-700 text-white shadow' 
                             : 'text-gray-400 hover:text-gray-200'}`}
+                        title="伤害统计"
                       >
                         <Flame className="w-4 h-4" />
-                        效果
+                        <span className="hidden xl:inline">伤害</span>
+                      </button>
+                      <button
+                        onClick={() => setChartMode('healing')}
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all
+                          ${chartMode === 'healing' 
+                            ? 'bg-gray-700 text-white shadow' 
+                            : 'text-gray-400 hover:text-gray-200'}`}
+                        title="治疗统计"
+                      >
+                        <Heart className="w-4 h-4" />
+                        <span className="hidden xl:inline">治疗</span>
                       </button>
                     </div>
                   </div>
@@ -1332,6 +1550,13 @@ const App = () => {
                              data={data.effectDamageEntries}
                              selectedUnits={selectedUnits}
                              selectedEffects={selectedEffects}
+                           />
+                        )}
+                        {chartMode === 'healing' && (
+                           <EffectHealingChart 
+                             data={data.effectHealingEntries}
+                             selectedUnits={selectedUnits}
+                             selectedEffects={selectedHealingEffects}
                            />
                         )}
                       </>
