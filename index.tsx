@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import Papa from 'https://esm.sh/papaparse@5.4.1';
 import {
@@ -8,9 +8,8 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  ResponsiveContainer,
   Legend
-} from 'https://esm.sh/recharts@2.7.2?external=react,react-dom';
+} from 'https://esm.sh/recharts@2.12.7?external=react,react-dom';
 import { 
   Upload, 
   FileText, 
@@ -87,6 +86,42 @@ const COLORS = [
 ];
 
 // --- Components ---
+
+// Custom Hook for ResizeObserver to replace ResponsiveContainer
+const useResizeObserver = (ref: React.RefObject<HTMLDivElement>) => {
+  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      if (!entries || entries.length === 0) return;
+      const { width, height } = entries[0].contentRect;
+      setDimensions({ width, height });
+    });
+
+    resizeObserver.observe(element);
+    return () => resizeObserver.disconnect();
+  }, [ref]);
+
+  return dimensions;
+};
+
+// AutoSizer Component
+const AutoSizer = ({ children }: { children: (size: { width: number; height: number }) => React.ReactNode }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dimensions = useResizeObserver(containerRef);
+
+  return (
+    <div ref={containerRef} className="w-full h-full min-h-0 min-w-0 overflow-hidden">
+      {dimensions && dimensions.width > 0 && dimensions.height > 0 ? (
+        children(dimensions)
+      ) : null}
+    </div>
+  );
+};
+
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
@@ -181,7 +216,7 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
           const unitMap = new Map<string, string>(); // uid -> Name
 
           // Regex definitions
-          const hpGenericRegex = /(?:^|[\s,;{("])(?:HP|hp|Health|current_hp|生命)\s*=\s*(\d+)/i;
+          const hpGenericRegex = /(?:^|[\s,;{("])(?:HP|hp|Health|current_hp|curhp|生命)\s*=\s*(\d+)/i;
           const hpChangeRegex = /变动情况.*=>\s*(\d+)/;
           const uidRegex = /uid\s*=\s*(\d+)/i;
           
@@ -668,40 +703,40 @@ const SkillChart = ({ data, selectedUnits, selectedSkills }: { data: SkillEntry[
   return (
     <div className="h-full flex flex-col gap-4">
        <div className="bg-gray-800/30 rounded-xl p-4 border border-gray-700 flex-1 min-h-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData.data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
-            <XAxis 
-              dataKey="time" 
-              stroke="#9ca3af" 
-              tick={{ fill: '#9ca3af', fontSize: 12 }}
-              label={{ value: '时间轴 (Time)', position: 'insideBottomRight', offset: -10, fill: '#6b7280' }}
-            />
-            <YAxis 
-              stroke="#9ca3af" 
-              tick={{ fill: '#9ca3af', fontSize: 12 }}
-              domain={['auto', 'auto']}
-              allowDecimals={false}
-              label={{ value: '累计释放次数', angle: -90, position: 'insideLeft', fill: '#6b7280' }}
-            />
-            <Tooltip content={<CustomTooltip />} />
-            <Legend verticalAlign="top" height={36}/>
-            
-            {chartData.keys.map((key, index) => (
-              <Line 
-                key={key}
-                type="stepAfter" 
-                dataKey={key} 
-                name={key}
-                stroke={COLORS[index % COLORS.length]} 
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 6, strokeWidth: 2 }}
-                animationDuration={1000}
+        <AutoSizer children={({ width, height }) => (
+            <LineChart width={width} height={height} data={chartData.data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
+              <XAxis 
+                dataKey="time" 
+                stroke="#9ca3af" 
+                tick={{ fill: '#9ca3af', fontSize: 12 }}
+                label={{ value: '时间轴 (Time)', position: 'insideBottomRight', offset: -10, fill: '#6b7280' }}
               />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
+              <YAxis 
+                stroke="#9ca3af" 
+                tick={{ fill: '#9ca3af', fontSize: 12 }}
+                domain={['auto', 'auto']}
+                allowDecimals={false}
+                label={{ value: '累计释放次数', angle: -90, position: 'insideLeft', fill: '#6b7280' }}
+              />
+              <Tooltip content={<CustomTooltip />} />
+              <Legend verticalAlign="top" height={36}/>
+              
+              {chartData.keys.map((key, index) => (
+                <Line 
+                  key={key}
+                  type="stepAfter" 
+                  dataKey={key} 
+                  name={key}
+                  stroke={COLORS[index % COLORS.length]} 
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 6, strokeWidth: 2 }}
+                  animationDuration={1000}
+                />
+              ))}
+            </LineChart>
+        )} />
       </div>
     </div>
   );
@@ -808,39 +843,39 @@ const EffectDamageChart = ({
   return (
     <div className="h-full flex flex-col gap-4">
        <div className="bg-gray-800/30 rounded-xl p-4 border border-gray-700 flex-1 min-h-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData.data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
-            <XAxis 
-              dataKey="time" 
-              stroke="#9ca3af" 
-              tick={{ fill: '#9ca3af', fontSize: 12 }}
-              label={{ value: '时间轴 (Time)', position: 'insideBottomRight', offset: -10, fill: '#6b7280' }}
-            />
-            <YAxis 
-              stroke="#9ca3af" 
-              tick={{ fill: '#9ca3af', fontSize: 12 }}
-              domain={['auto', 'auto']}
-              label={{ value: '累计数值', angle: -90, position: 'insideLeft', fill: '#6b7280' }}
-            />
-            <Tooltip content={<CustomTooltip />} />
-            <Legend verticalAlign="top" height={36}/>
-            
-            {chartData.keys.map((key, index) => (
-              <Line 
-                key={key}
-                type="stepAfter" 
-                dataKey={key} 
-                name={key}
-                stroke={COLORS[index % COLORS.length]} 
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 6, strokeWidth: 2 }}
-                animationDuration={1000}
+        <AutoSizer children={({ width, height }) => (
+            <LineChart width={width} height={height} data={chartData.data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
+              <XAxis 
+                dataKey="time" 
+                stroke="#9ca3af" 
+                tick={{ fill: '#9ca3af', fontSize: 12 }}
+                label={{ value: '时间轴 (Time)', position: 'insideBottomRight', offset: -10, fill: '#6b7280' }}
               />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
+              <YAxis 
+                stroke="#9ca3af" 
+                tick={{ fill: '#9ca3af', fontSize: 12 }}
+                domain={['auto', 'auto']}
+                label={{ value: '累计数值', angle: -90, position: 'insideLeft', fill: '#6b7280' }}
+              />
+              <Tooltip content={<CustomTooltip />} />
+              <Legend verticalAlign="top" height={36}/>
+              
+              {chartData.keys.map((key, index) => (
+                <Line 
+                  key={key}
+                  type="stepAfter" 
+                  dataKey={key} 
+                  name={key}
+                  stroke={COLORS[index % COLORS.length]} 
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 6, strokeWidth: 2 }}
+                  animationDuration={1000}
+                />
+              ))}
+            </LineChart>
+        )} />
       </div>
     </div>
   );
@@ -928,39 +963,39 @@ const EffectHealingChart = ({ data, selectedUnits, selectedEffects }: { data: Ef
   return (
     <div className="h-full flex flex-col gap-4">
        <div className="bg-gray-800/30 rounded-xl p-4 border border-gray-700 flex-1 min-h-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData.data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
-            <XAxis 
-              dataKey="time" 
-              stroke="#9ca3af" 
-              tick={{ fill: '#9ca3af', fontSize: 12 }}
-              label={{ value: '时间轴 (Time)', position: 'insideBottomRight', offset: -10, fill: '#6b7280' }}
-            />
-            <YAxis 
-              stroke="#9ca3af" 
-              tick={{ fill: '#9ca3af', fontSize: 12 }}
-              domain={['auto', 'auto']}
-              label={{ value: '累计治疗量', angle: -90, position: 'insideLeft', fill: '#6b7280' }}
-            />
-            <Tooltip content={<CustomTooltip />} />
-            <Legend verticalAlign="top" height={36}/>
-            
-            {chartData.keys.map((key, index) => (
-              <Line 
-                key={key}
-                type="stepAfter" 
-                dataKey={key} 
-                name={key}
-                stroke={COLORS[index % COLORS.length]} 
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 6, strokeWidth: 2 }}
-                animationDuration={1000}
+        <AutoSizer children={({ width, height }) => (
+            <LineChart width={width} height={height} data={chartData.data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
+              <XAxis 
+                dataKey="time" 
+                stroke="#9ca3af" 
+                tick={{ fill: '#9ca3af', fontSize: 12 }}
+                label={{ value: '时间轴 (Time)', position: 'insideBottomRight', offset: -10, fill: '#6b7280' }}
               />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
+              <YAxis 
+                stroke="#9ca3af" 
+                tick={{ fill: '#9ca3af', fontSize: 12 }}
+                domain={['auto', 'auto']}
+                label={{ value: '累计治疗量', angle: -90, position: 'insideLeft', fill: '#6b7280' }}
+              />
+              <Tooltip content={<CustomTooltip />} />
+              <Legend verticalAlign="top" height={36}/>
+              
+              {chartData.keys.map((key, index) => (
+                <Line 
+                  key={key}
+                  type="stepAfter" 
+                  dataKey={key} 
+                  name={key}
+                  stroke={COLORS[index % COLORS.length]} 
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 6, strokeWidth: 2 }}
+                  animationDuration={1000}
+                />
+              ))}
+            </LineChart>
+        )} />
       </div>
     </div>
   );
@@ -1072,39 +1107,39 @@ const HpChart = ({ data, selectedUnits }: { data: LogEntry[], selectedUnits: str
       )}
 
       <div className="bg-gray-800/30 rounded-xl p-4 border border-gray-700 flex-1 min-h-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
-            <XAxis 
-              dataKey="time" 
-              stroke="#9ca3af" 
-              tick={{ fill: '#9ca3af', fontSize: 12 }}
-              label={{ value: '时间轴 (Time)', position: 'insideBottomRight', offset: -10, fill: '#6b7280' }}
-            />
-            <YAxis 
-              stroke="#9ca3af" 
-              tick={{ fill: '#9ca3af', fontSize: 12 }}
-              domain={['auto', 'auto']}
-            />
-            <Tooltip content={<CustomTooltip />} />
-            <Legend verticalAlign="top" height={36}/>
-            
-            {selectedUnits.map((unit, index) => (
-              <Line 
-                key={unit}
-                type="monotone" 
-                dataKey={unit} 
-                name={unit}
-                stroke={COLORS[index % COLORS.length]} 
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 6, strokeWidth: 2 }}
-                connectNulls 
-                animationDuration={1000}
+        <AutoSizer children={({ width, height }) => (
+            <LineChart width={width} height={height} data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
+              <XAxis 
+                dataKey="time" 
+                stroke="#9ca3af" 
+                tick={{ fill: '#9ca3af', fontSize: 12 }}
+                label={{ value: '时间轴 (Time)', position: 'insideBottomRight', offset: -10, fill: '#6b7280' }}
               />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
+              <YAxis 
+                stroke="#9ca3af" 
+                tick={{ fill: '#9ca3af', fontSize: 12 }}
+                domain={['auto', 'auto']}
+              />
+              <Tooltip content={<CustomTooltip />} />
+              <Legend verticalAlign="top" height={36}/>
+              
+              {selectedUnits.map((unit, index) => (
+                <Line 
+                  key={unit}
+                  type="monotone" 
+                  dataKey={unit} 
+                  name={unit}
+                  stroke={COLORS[index % COLORS.length]} 
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 6, strokeWidth: 2 }}
+                  connectNulls 
+                  animationDuration={1000}
+                />
+              ))}
+            </LineChart>
+        )} />
       </div>
     </div>
   );
