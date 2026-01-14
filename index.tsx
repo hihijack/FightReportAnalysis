@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import Papa from 'https://esm.sh/papaparse@5.4.1';
+import Papa from 'papaparse';
 import {
   LineChart,
   Line,
@@ -9,7 +9,7 @@ import {
   CartesianGrid,
   Tooltip,
   Legend
-} from 'https://esm.sh/recharts@2.12.7?external=react,react-dom';
+} from 'recharts';
 import { 
   Upload, 
   FileText, 
@@ -29,7 +29,7 @@ import {
   Heart,
   Shield,
   Target
-} from 'https://esm.sh/lucide-react@0.344.0?external=react';
+} from 'lucide-react';
 
 // --- Types ---
 
