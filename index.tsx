@@ -62,11 +62,19 @@ interface EffectHealingEntry {
   healing: number;
 }
 
+interface EffectShieldEntry {
+  time: number;
+  unit: string;
+  effect: string;
+  shieldValue: number;
+}
+
 interface ProcessedData {
   entries: LogEntry[];
   skillEntries: SkillEntry[];
   effectDamageEntries: EffectDamageEntry[];
   effectHealingEntries: EffectHealingEntry[];
+  effectShieldEntries: EffectShieldEntry[];
   units: string[];
   timeRange: [number, number];
 }
@@ -175,6 +183,7 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
         const skillEntries: SkillEntry[] = [];
         const effectDamageEntries: EffectDamageEntry[] = [];
         const effectHealingEntries: EffectHealingEntry[] = [];
+        const effectShieldEntries: EffectShieldEntry[] = [];
         const unitsSet = new Set<string>();
         let minTime = Infinity;
         let maxTime = -Infinity;
@@ -226,6 +235,7 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
           const shieldDeductionRegex = /护盾扣除=(\d+)/i;
 
           const healingRegex = /回复生命值=(\d+)/i;
+          const shieldAddedRegex = /添加护盾值=(\d+)/i;
 
           rawRows.forEach((row, idx) => {
             const values = row.map(String);
@@ -253,7 +263,7 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
                }
             }
 
-            // --- EFFECT DAMAGE & HEALING PARSING ---
+            // --- EFFECT DAMAGE & HEALING & SHIELD PARSING ---
             const isEffectEvent = eventType.includes('效果触发');
             if (isEffectEvent && values.length > 6) {
                const u = values[3].trim(); // Source Unit
@@ -333,6 +343,35 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
                        unit: u,
                        effect: effectName,
                        healing: healing
+                     });
+                     unitsSet.add(u);
+                     if (time < minTime) minTime = time;
+                     if (time > maxTime) maxTime = time;
+                  }
+               }
+
+               // Shield Application Logic
+               let shieldValue = 0;
+               let foundShield = false;
+               
+               for (const val of values) {
+                 const match = val.match(shieldAddedRegex);
+                 if (match) {
+                   shieldValue = parseInt(match[1], 10);
+                   foundShield = true;
+                   break;
+                 }
+               }
+
+               if (foundShield) {
+                  const effectName = values[6]?.trim();
+                  
+                  if (u && effectName) {
+                     effectShieldEntries.push({
+                       time,
+                       unit: u,
+                       effect: effectName,
+                       shieldValue: shieldValue
                      });
                      unitsSet.add(u);
                      if (time < minTime) minTime = time;
@@ -426,7 +465,7 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
           });
         }
 
-        if (entries.length === 0 && skillEntries.length === 0 && effectDamageEntries.length === 0 && effectHealingEntries.length === 0) {
+        if (entries.length === 0 && skillEntries.length === 0 && effectDamageEntries.length === 0 && effectHealingEntries.length === 0 && effectShieldEntries.length === 0) {
           setError(`解析了 ${rawRows.length} 行，但未找到有效的战报数据。
             支持格式：逻辑时间, 系统时间, 效果类型(如'血量变化', '技能释放', '效果触发')...
             如果是中文日志，请尝试切换右上角的“编码”选项 (如 GBK)。`);
@@ -438,6 +477,7 @@ const FileUpload = ({ onDataLoaded }: { onDataLoaded: (data: ProcessedData, file
           skillEntries,
           effectDamageEntries,
           effectHealingEntries,
+          effectShieldEntries,
           units: Array.from(unitsSet).sort(),
           timeRange: [minTime, maxTime]
         }, file.name);
@@ -1001,6 +1041,126 @@ const EffectHealingChart = ({ data, selectedUnits, selectedEffects }: { data: Ef
   );
 };
 
+const EffectShieldChart = ({ data, selectedUnits, selectedEffects }: { data: EffectShieldEntry[], selectedUnits: string[], selectedEffects: string[] }) => {
+  const chartData = useMemo(() => {
+    if (!selectedUnits.length || !data.length) return { data: [], keys: [] };
+
+    const relevantEntries = data.filter(e => 
+      selectedUnits.includes(e.unit) && 
+      selectedEffects.includes(e.effect)
+    );
+    
+    if (relevantEntries.length === 0) return { data: [], keys: [] };
+
+    const keys = new Set<string>();
+    relevantEntries.forEach(e => keys.add(`${e.unit} - ${e.effect}`));
+    const sortedKeys = Array.from(keys).sort();
+
+    const entriesByTime = new Map<number, EffectShieldEntry[]>();
+    const timestamps = new Set<number>();
+    
+    relevantEntries.forEach(e => {
+      timestamps.add(e.time);
+      if (!entriesByTime.has(e.time)) entriesByTime.set(e.time, []);
+      entriesByTime.get(e.time)!.push(e);
+    });
+
+    const sortedTimestamps = Array.from(timestamps).sort((a, b) => a - b);
+    const result = [];
+    const cumulativeShield: Record<string, number> = {};
+
+    sortedKeys.forEach(k => cumulativeShield[k] = 0);
+
+    for (const t of sortedTimestamps) {
+      const events = entriesByTime.get(t) || [];
+      events.forEach(e => {
+        const key = `${e.unit} - ${e.effect}`;
+        cumulativeShield[key] = (cumulativeShield[key] || 0) + e.shieldValue;
+      });
+
+      const point: any = { time: t };
+      let hasData = false;
+      sortedKeys.forEach(k => {
+        if (cumulativeShield[k] > 0) {
+           point[k] = cumulativeShield[k];
+           hasData = true;
+        }
+      });
+      
+      if (hasData) result.push(point);
+    }
+
+    return { data: result, keys: sortedKeys };
+  }, [data, selectedUnits, selectedEffects]);
+
+  if (selectedUnits.length === 0) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-4 min-h-[400px]">
+        <Users className="w-16 h-16 opacity-20" />
+        <p>请选择单位以查看护盾施加累计</p>
+      </div>
+    );
+  }
+
+  if (selectedEffects.length === 0) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-4 min-h-[400px]">
+        <Filter className="w-16 h-16 opacity-20" />
+        <p>请选择需要关注的护盾效果</p>
+      </div>
+    );
+  }
+
+  if (!chartData || chartData.data.length === 0) {
+    return (
+       <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-4 min-h-[400px]">
+        <Shield className="w-16 h-16 opacity-20" />
+        <p>所选单位在此期间没有施加所选效果的护盾</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col gap-4">
+       <div className="bg-gray-800/30 rounded-xl p-4 border border-gray-700 flex-1 min-h-0">
+        <AutoSizer children={({ width, height }) => (
+            <LineChart width={width} height={height} data={chartData.data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
+              <XAxis 
+                dataKey="time" 
+                stroke="#9ca3af" 
+                tick={{ fill: '#9ca3af', fontSize: 12 }}
+                label={{ value: '时间轴 (Time)', position: 'insideBottomRight', offset: -10, fill: '#6b7280' }}
+              />
+              <YAxis 
+                stroke="#9ca3af" 
+                tick={{ fill: '#9ca3af', fontSize: 12 }}
+                domain={['auto', 'auto']}
+                label={{ value: '累计护盾值', angle: -90, position: 'insideLeft', fill: '#6b7280' }}
+              />
+              <Tooltip content={<CustomTooltip />} />
+              <Legend verticalAlign="top" height={36}/>
+              
+              {chartData.keys.map((key, index) => (
+                <Line 
+                  key={key}
+                  type="stepAfter" 
+                  dataKey={key} 
+                  name={key}
+                  stroke={COLORS[index % COLORS.length]} 
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 6, strokeWidth: 2 }}
+                  animationDuration={1000}
+                />
+              ))}
+            </LineChart>
+        )} />
+      </div>
+    </div>
+  );
+};
+
 const HpChart = ({ data, selectedUnits }: { data: LogEntry[], selectedUnits: string[] }) => {
   const chartData = useMemo(() => {
     if (!selectedUnits.length || !data.length) return [];
@@ -1260,7 +1420,8 @@ const App = () => {
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedEffects, setSelectedEffects] = useState<string[]>([]);
   const [selectedHealingEffects, setSelectedHealingEffects] = useState<string[]>([]);
-  const [chartMode, setChartMode] = useState<'hp' | 'skill' | 'effect' | 'healing'>('hp');
+  const [selectedShieldEffects, setSelectedShieldEffects] = useState<string[]>([]);
+  const [chartMode, setChartMode] = useState<'hp' | 'skill' | 'effect' | 'healing' | 'shield'>('hp');
   
   // Damage Statistics Modes
   const [dmgModeRaw, setDmgModeRaw] = useState(true);
@@ -1278,6 +1439,7 @@ const App = () => {
     setSelectedSkills([]);
     setSelectedEffects([]);
     setSelectedHealingEffects([]);
+    setSelectedShieldEffects([]);
   };
 
   const availableSkills = useMemo(() => {
@@ -1313,6 +1475,17 @@ const App = () => {
     return Array.from(effects).sort();
   }, [data, selectedUnits]);
 
+  const availableShieldEffects = useMemo(() => {
+    if (!data || selectedUnits.length === 0) return [];
+    const effects = new Set<string>();
+    data.effectShieldEntries.forEach(e => {
+      if (selectedUnits.includes(e.unit)) {
+        effects.add(e.effect);
+      }
+    });
+    return Array.from(effects).sort();
+  }, [data, selectedUnits]);
+
   useEffect(() => {
     if (chartMode === 'skill' && availableSkills.length > 0 && selectedSkills.length === 0) {
        setSelectedSkills(availableSkills);
@@ -1323,20 +1496,25 @@ const App = () => {
     if (chartMode === 'healing' && availableHealingEffects.length > 0 && selectedHealingEffects.length === 0) {
        setSelectedHealingEffects(availableHealingEffects);
     }
-  }, [chartMode, availableSkills.length, availableEffects.length, availableHealingEffects.length]);
+    if (chartMode === 'shield' && availableShieldEffects.length > 0 && selectedShieldEffects.length === 0) {
+       setSelectedShieldEffects(availableShieldEffects);
+    }
+  }, [chartMode, availableSkills.length, availableEffects.length, availableHealingEffects.length, availableShieldEffects.length]);
 
   const getChartIcon = (mode: string) => {
      if (mode === 'hp') return <Activity className="w-6 h-6 text-accent-400" />;
      if (mode === 'skill') return <Zap className="w-6 h-6 text-yellow-400" />;
      if (mode === 'effect') return <Flame className="w-6 h-6 text-orange-500" />;
-     return <Heart className="w-6 h-6 text-emerald-500" />;
+     if (mode === 'healing') return <Heart className="w-6 h-6 text-emerald-500" />;
+     return <Shield className="w-6 h-6 text-indigo-400" />;
   };
 
   const getChartTitle = (mode: string) => {
      if (mode === 'hp') return '血量对比分析';
      if (mode === 'skill') return '技能释放统计';
      if (mode === 'effect') return '效果累计伤害';
-     return '效果治疗统计';
+     if (mode === 'healing') return '效果治疗统计';
+     return '护盾施加累计';
   };
 
   const handleRawChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1421,7 +1599,7 @@ const App = () => {
                                </div>
                                <div className="text-xs text-gray-500 flex justify-between">
                                  <span>效果记录:</span> 
-                                 <span className="text-gray-300">{(data.effectDamageEntries.length + data.effectHealingEntries.length).toLocaleString()}</span>
+                                 <span className="text-gray-300">{(data.effectDamageEntries.length + data.effectHealingEntries.length + data.effectShieldEntries.length).toLocaleString()}</span>
                                </div>
                           </div>
                         </div>
@@ -1448,7 +1626,7 @@ const App = () => {
              )}
           </div>
 
-          {data && (chartMode === 'skill' || chartMode === 'effect' || chartMode === 'healing') && (
+          {data && (chartMode === 'skill' || chartMode === 'effect' || chartMode === 'healing' || chartMode === 'shield') && (
              <div className="w-full lg:w-[300px] flex-shrink-0 flex flex-col h-full min-h-0">
                <div className="bg-gray-900 rounded-xl p-1 shadow-lg shadow-black/20 h-full flex flex-col animate-fade-in-up">
                   {chartMode === 'skill' && (
@@ -1479,6 +1657,16 @@ const App = () => {
                       title="治疗筛选"
                       emptyMessage="未找到匹配治疗效果"
                       icon={Heart}
+                    />
+                  )}
+                  {chartMode === 'shield' && (
+                    <GenericSelector 
+                      items={availableShieldEffects}
+                      selectedItems={selectedShieldEffects}
+                      onChange={setSelectedShieldEffects}
+                      title="护盾筛选"
+                      emptyMessage="未找到匹配护盾效果"
+                      icon={Shield}
                     />
                   )}
                </div>
@@ -1583,6 +1771,17 @@ const App = () => {
                         <Heart className="w-4 h-4" />
                         <span className="hidden xl:inline">治疗</span>
                       </button>
+                      <button
+                        onClick={() => setChartMode('shield')}
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all
+                          ${chartMode === 'shield' 
+                            ? 'bg-gray-700 text-white shadow' 
+                            : 'text-gray-400 hover:text-gray-200'}`}
+                        title="护盾施加统计"
+                      >
+                        <Shield className="w-4 h-4" />
+                        <span className="hidden xl:inline">护盾</span>
+                      </button>
                     </div>
                   </div>
                   
@@ -1612,6 +1811,13 @@ const App = () => {
                              data={data.effectHealingEntries}
                              selectedUnits={selectedUnits}
                              selectedEffects={selectedHealingEffects}
+                           />
+                        )}
+                        {chartMode === 'shield' && (
+                           <EffectShieldChart 
+                             data={data.effectShieldEntries}
+                             selectedUnits={selectedUnits}
+                             selectedEffects={selectedShieldEffects}
                            />
                         )}
                       </>
